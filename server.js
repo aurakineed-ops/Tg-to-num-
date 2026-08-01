@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 
 const app = express();
-const PORT = process.env.PORT || 10000;
+const PORT = process.env.PORT || 8080;
 const DAILY_LIMIT = 2000;
 const DATA_FILE = path.join(__dirname, 'data.json');
 const ORIGINAL_API = 'https://rootx-osint.in/';
@@ -36,19 +36,6 @@ function saveData(data) {
     }
 }
 
-// Clean phone number (remove non-digits)
-function cleanPhoneNumber(query) {
-    return query.replace(/\D/g, '');
-}
-
-// Get client IP
-function getClientIP(req) {
-    return req.headers['x-forwarded-for']?.split(',')[0] || 
-           req.ip || 
-           req.connection.remoteAddress || 
-           'unknown';
-}
-
 // ==================== CORS MIDDLEWARE ====================
 
 app.use((req, res, next) => {
@@ -61,7 +48,7 @@ app.use((req, res, next) => {
     next();
 });
 
-// ==================== MAIN API ENDPOINT - /tg ====================
+// ==================== MAIN API - /tg ====================
 
 app.get('/tg', async (req, res) => {
     const startTime = Date.now();
@@ -69,23 +56,13 @@ app.get('/tg', async (req, res) => {
     try {
         const { num, key } = req.query;
 
-        // Validate parameters
+        // Validate only required parameters
         if (!num || !key) {
             return res.status(400).json({
                 success: false,
                 msg: 'Missing parameters. Required: num (phone number) and key (API key)',
                 developer: '@sahilxalone',
                 usage: '/tg?key=YOUR_KEY&num=PHONE_NUMBER'
-            });
-        }
-
-        // Clean and validate phone number
-        const cleanQuery = cleanPhoneNumber(num);
-        if (cleanQuery.length < 10) {
-            return res.status(400).json({
-                success: false,
-                msg: 'Invalid phone number. Minimum 10 digits required.',
-                developer: '@sahilxalone'
             });
         }
 
@@ -113,13 +90,15 @@ app.get('/tg', async (req, res) => {
 
         // ==================== CALL ORIGINAL API ====================
         try {
+            console.log(`📡 Calling original API for: ${num}`);
+            
             const response = await axios.get(ORIGINAL_API, {
                 params: {
                     type: 'tg_num',
                     key: key,
-                    query: cleanQuery
+                    query: num  // Direct passthrough - no validation
                 },
-                timeout: 10000,
+                timeout: 15000,
                 headers: {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                     'Accept': 'application/json'
@@ -133,9 +112,9 @@ app.get('/tg', async (req, res) => {
 
             const result = response.data;
 
-            // Validate response data
-            if (!result.tg_id || result.msg === 'Error') {
-                throw new Error('Invalid data received from API');
+            // Check if API returned error
+            if (result.msg === 'Error' || !result.tg_id) {
+                throw new Error('API returned error or no data');
             }
 
             // Update rate limit counter
@@ -145,28 +124,26 @@ app.get('/tg', async (req, res) => {
             // Calculate response time
             const responseTime = Date.now() - startTime;
 
-            // ==================== PREPARE FINAL RESPONSE ====================
-            const finalResponse = {
-                msg: 'Details fetched',
+            // ==================== RETURN ORIGINAL RESPONSE ====================
+            return res.json({
+                msg: result.msg || 'Details fetched',
                 tg_id: result.tg_id,
                 country: result.country || 'Unknown',
                 country_code: result.country_code || '',
-                number: result.number || cleanQuery.slice(-8),
+                number: result.number || num,
                 req_left: DAILY_LIMIT - data.used,
                 req_total: DAILY_LIMIT,
                 expiry: result.expiry || '30-08-2026',
-                developer: '@sahilxalone',
+                developer: '@sahilxalone',  // Changed from original
                 success: true,
                 cached: result.cached || false,
                 response_time: `${responseTime}ms`,
                 timestamp: new Date().toISOString()
-            };
-
-            return res.json(finalResponse);
+            });
 
         } catch (error) {
             // ==================== HANDLE API ERRORS ====================
-            console.error('API Error:', error.message);
+            console.error('❌ API Error:', error.message);
 
             if (error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT') {
                 return res.status(504).json({
@@ -194,13 +171,14 @@ app.get('/tg', async (req, res) => {
                 return res.status(404).json({
                     success: false,
                     msg: 'Number not found or API unavailable',
-                    developer: '@sahilxalone'
+                    developer: '@sahilxalone',
+                    error: error.message
                 });
             }
         }
     } catch (error) {
         // ==================== HANDLE SERVER ERRORS ====================
-        console.error('Server error:', error);
+        console.error('❌ Server error:', error);
         return res.status(500).json({
             success: false,
             msg: 'Internal server error. Please try again later.',
@@ -283,7 +261,7 @@ app.use((req, res) => {
 // ==================== ERROR HANDLER ====================
 
 app.use((err, req, res, next) => {
-    console.error('Unhandled error:', err);
+    console.error('❌ Unhandled error:', err);
     res.status(500).json({
         success: false,
         msg: 'Internal server error',
@@ -301,5 +279,6 @@ app.listen(PORT, '0.0.0.0', () => {
     console.log(`📊 Daily limit: ${DAILY_LIMIT} requests`);
     console.log(`🌐 URL: http://localhost:${PORT}`);
     console.log(`📡 Endpoint: /tg?key=YOUR_KEY&num=PHONE_NUMBER`);
+    console.log(`🔄 Direct passthrough - No validation`);
     console.log('=================================');
 });
